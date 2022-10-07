@@ -1,0 +1,121 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+version: '3'
+
+services:
+
+  # Spark master node
+  spark:
+    image: docker.io/bitnami/spark:3.1.2
+    environment:
+      - SPARK_MODE=master
+    volumes:
+      # Optionally, mount Spark conf for easier configuration
+      - ./spark-conf/cluster.conf:/opt/bitnami/spark/conf/spark-defaults.conf
+      # work-around to share job jar across containers
+      #- /tmp:/tmp
+    ports:
+      # Spark master UI
+      - "8080:8080"
+    depends_on:
+      - spark-worker
+
+  # Spark worker node
+  # Note:
+  # Unless the python worker pool would be running inside the same container, we cannot use more than one worker as
+  # the required port range 8100 - 8200 can't be mapped more than once.
+  spark-worker:
+    image: docker.io/bitnami/spark:3.1.2
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark:7077
+      # By default Beam expects workers (of the SDK worker pool) to connect to a Spark worker on `localhost`. When running
+      # the worker pool in docker on a Mac this isn't possible due to the lack of `host` networking. Using
+      # BEAM_WORKER_POOL_IN_DOCKER_VM=1, Beam will use `host.docker.internal` to communicate via the docker host instead.
+      - BEAM_WORKER_POOL_IN_DOCKER_VM=1
+      # DOCKER_MAC_CONTAINER=1 limits the ports on a Spark worker for communication with SDK workers to the range 8100 - 8200
+      # instead of using random ports. Ports of the range are used in a round-robin fashion and have to be published.
+      - DOCKER_MAC_CONTAINER=1
+    volumes:
+      # Optionally, mount Spark conf for easier configuration
+      - ./spark-conf/cluster.conf:/opt/bitnami/spark/conf/spark-defaults.conf
+      # Mount work directory to local directory for easy access to logs
+      - ./work/spark:/opt/bitnami/spark/work
+      # work-around to share job jar across containers
+      #- /tmp:/tmp
+    ports:
+      # Spark Worker UI
+      - "8081:8081"
+      # Ports used for SDK workers to communicate with the Spark worker
+      - "8100-8200:8100-8200"
+    links:
+      # Not really necessary, we could also configure the job to use --environment_config=beam-python-workers:50000
+      # This is just to demonstrate that only the Spark worker requests a Python worker from the pool.
+      - "beam-python-workers:pysdk"
+    depends_on:
+      - beam-python-workers
+
+  # Beam Python SDK harness / worker pool
+  beam-python-workers:
+    image: apache/beam_python3.8_sdk:2.41.0
+    command: ["--worker_pool"]
+    volumes:
+      # Mount /tmp to access results
+      - ./work/pythonsdk:/tmp
+
+  # Beam Job server for Apache Spark
+  # Note: The Spark dependency of the job-server must match the cluster's Spark version.
+  beam-job-server:
+    # Until https://github.com/apache/beam/issues/21092 is released, you have to build the image yourself.
+    # ./gradlew :runners:spark:3:job-server:container:docker
+    image: apache/beam_spark3_job_server:latest
+    command: ["--spark-master-url=spark://spark:7077", "--clean-artifacts-per-job=true"]
+    ports:
+      # Spark job UI on the driver
+      - "4040:4040"
+      # Job endpoint
+      - "8099:8099"
+      # Artifact endpoint
+      - "8098:8098"
+    depends_on:
+      - spark
+
+  beam-job:
+    image: apache/beam_python3.8_sdk:2.41.0
+    entrypoint: [
+      "python",
+      "/tmp/app/wordcount.py",
+#      "--runner=SparkRunner",
+#      "--spark_submit_uber_jar",
+#      "--spark_rest_url=http://spark:6066",
+#      "--spark_master_url=spark://spark:7077",
+      "--runner=PortableRunner",
+      "--job_endpoint=beam-job-server:8099",
+      "--artifact_endpoint=beam-job-server:8098",
+      "--environment_type=EXTERNAL",
+      # used by Spark workers to connect to the SDK worker pool
+      "--environment_config=pysdk:50000",
+      # files will be written on SDK worker pool
+      "--output=/tmp/result"
+    ]
+    volumes:
+      - ./wordcount.py:/tmp/app/wordcount.py
+      # work-around to share job jar across containers
+      #- /tmp:/tmp
+    depends_on:
+      - beam-job-server
