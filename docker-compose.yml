@@ -27,8 +27,6 @@ services:
     volumes:
       # Optionally, mount Spark conf for easier configuration
       - ./spark-conf/cluster.conf:/opt/bitnami/spark/conf/spark-defaults.conf
-      # work-around to share job jar across containers
-      #- /tmp:/tmp
     ports:
       # Spark master UI
       - "8080:8080"
@@ -56,8 +54,6 @@ services:
       - ./spark-conf/cluster.conf:/opt/bitnami/spark/conf/spark-defaults.conf
       # Mount work directory to local directory for easy access to logs
       - ./work/spark:/opt/bitnami/spark/work
-      # work-around to share job jar across containers
-      #- /tmp:/tmp
     ports:
       # Spark Worker UI
       - "8081:8081"
@@ -75,7 +71,7 @@ services:
     image: apache/beam_python3.8_sdk:2.41.0
     command: ["--worker_pool"]
     volumes:
-      # Mount /tmp to access results
+      # Mount /tmp to access result files
       - ./work/pythonsdk:/tmp
 
   # Beam Job server for Apache Spark
@@ -100,10 +96,6 @@ services:
     entrypoint: [
       "python",
       "/tmp/app/wordcount.py",
-#      "--runner=SparkRunner",
-#      "--spark_submit_uber_jar",
-#      "--spark_rest_url=http://spark:6066",
-#      "--spark_master_url=spark://spark:7077",
       "--runner=PortableRunner",
       "--job_endpoint=beam-job-server:8099",
       "--artifact_endpoint=beam-job-server:8098",
@@ -115,7 +107,5 @@ services:
     ]
     volumes:
       - ./wordcount.py:/tmp/app/wordcount.py
-      # work-around to share job jar across containers
-      #- /tmp:/tmp
     depends_on:
       - beam-job-server
